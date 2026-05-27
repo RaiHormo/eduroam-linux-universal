@@ -1,0 +1,9 @@
+[Security]
+	EAP-Method=PEAP
+	EAP-Identity=anonymous@uop.gr
+	EAP-PEAP-Phase2-Method=MSCHAPV2
+	EAP-PEAP-Phase2-Identity=dit23058@uop.gr
+	EAP-PEAP-Phase2-Password=Rairis05.
+
+	[Settings]
+	AutoConnect=true

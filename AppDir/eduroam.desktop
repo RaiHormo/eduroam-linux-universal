@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Eduroam Linux Universal Installer
+Exec=sh AppRun.sh
+Icon=icon
+Type=Application
+Categories=Network;
