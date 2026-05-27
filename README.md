@@ -1,7 +1,7 @@
 # Eduroam Linux Universal Installer
 An easy to use eduroam installer for Linux that works for any University.
 
-A fork from the official CAT installer that's been made easy to use.
+A fork from the official CAT installer that's been made easier to use.
 
 Made by Iris Hormoviti
 ## Download
