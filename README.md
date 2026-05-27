@@ -6,14 +6,14 @@ A fork from the official CAT installer that's been made easy to use.
 Made by Iris Hormoviti
 ## Download
 ### AppImage (Easier)
-[Click here to download the AppImage file](https://a)
+[Click here to download the AppImage file](https://github.com/RaiHormo/eduroam-linux-universal/releases/latest/download/Eduroam-Linux-Installer.AppImage)
 
 Download the file and just double click to run it.
 
 If it doesn't run, right click it, go to Properties, and make sure "Execute as Program" is enabled.
 If that still doesn't work, maybe your distro doesn't have the FUSE library, in which case, you should use the python file
 ### Python
-[Click here to download the Python file](https://a)
+[Click here to download the Python file](https://github.com/RaiHormo/eduroam-linux-universal/releases/latest/download/eduroam-universal.py)
 
 Open a terminal, type `python3 ` (with a space after), then drag and drop the python file into the terminal window. Then press enter.
 Alternatively you can type `python3 /path/to/the/file/eduroam-universal.py`
