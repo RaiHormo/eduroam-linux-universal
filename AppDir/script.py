@@ -58,6 +58,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import subprocess
 import sys
 import ssl
@@ -123,8 +124,8 @@ debug(sys.version_info.major)
 try:
 	import dbus
 except ImportError:
-	print("WARNING: Cannot import the dbus module for "+sys.executable+" - please install dbus-python!")
-	debug("Cannot import the dbus module for "+sys.executable)
+	print(f"\nERROR: The 'dbus' module is missing for: {sys.executable}")
+	debug(f"ImportError: sys.path is {sys.path}")
 	NM_AVAILABLE = False
 
 
@@ -247,6 +248,12 @@ def run_installer() -> None:
 	installer_data = InstallerData(silent=silent, username=username,
 								   password=password, pfx_file=pfx_file, gui=gui)
 
+	if not NM_AVAILABLE and not silent:
+		installer_data.alert("The 'dbus' module couldn't load. NetworkManager support will be disabled.\n\n"
+							 "If your system uses NetworkManager, this script may not work. \n\nThis might be " \
+							 "caused by the python-dbus module not being installed, or the wrong python interprater " \
+							 "being used.\n\n{0}".format(sys.executable))
+
 	installer_data.configure_profile()
 	
 	installer_data.show_info(Config.init_info.format(
@@ -296,8 +303,12 @@ def run_installer() -> None:
 	# Follow up by committing the backend credentials directly to iwd securely
 	if auto_iwd and NM_AVAILABLE:
 		iwd_config = IwdConfiguration()
+		all_iwd_configs = {}
 		for ssid in Config.ssids:
-			iwd_config.generate_iwd_config(ssid, installer_data, force_system_path=True)
+			# Generate configs without writing them immediately to batch operations
+			iwd_config.generate_iwd_config(ssid, installer_data, write=False)
+			all_iwd_configs[ssid] = iwd_config.config
+		iwd_config.write_configs(all_iwd_configs, force_system_path=True)
 
 		# Automatically cycle the Wi-Fi radio to pick up the new profiles
 		debug("Toggling Wi-Fi so the new connection is detected...")
@@ -819,41 +830,47 @@ class InstallerData:
 		Config.profilename = profile_name
 
 		# EAP Outer/Inner
-		eap_method = provider.find(".//AuthenticationMethod/EAPMethod/Type")
-		if eap_method is not None:
-			type_val = eap_method.findtext("Type")
+		eap_method_elem = provider.find(".//AuthenticationMethod")
+		if eap_method_elem is not None:
+			eap_type_elem = eap_method_elem.find(".//EAPMethod/Type")
+			type_val = eap_type_elem.text.strip() if (eap_type_elem is not None and eap_type_elem.text) else ""
 			if type_val == "25": Config.eap_outer = "PEAP"
 			elif type_val == "21": Config.eap_outer = "TTLS"
 			elif type_val == "13": Config.eap_outer = "TLS"
-		
-		inner = provider.findtext(".//AuthenticationMethod/InnerAuthenticationMethod")
-		if inner: Config.eap_inner = inner.upper()
+
+			inner = eap_method_elem.findtext("InnerAuthenticationMethod")
+			if inner and inner.strip():
+				Config.eap_inner = inner.strip().upper()
 
 		# Identity / Realm
 		anon = provider.findtext(".//AnonymousIdentity")
-		provider_id = provider.get("ID", "")
+		if anon: anon = anon.strip()
+		provider_id = provider.get("ID", "").strip()
 
 		if anon and "@" in anon:
 			Config.anonymous_identity = anon
 			Config.user_realm = anon.split("@")[-1]
 		elif provider_id:
 			# Fallback: Use the EAPIdentityProvider ID (e.g., "uop.gr")
-			Config.anonymous_identity = f"anonymous@{provider_id}"
+			Config.anonymous_identity = f"anonymous@{provider_id}".strip()
 			Config.user_realm = provider_id
 		else:
 			Config.anonymous_identity = ""
 			Config.user_realm = ""
 
 		# Servers
-		servers = provider.findtext(".//ServerSideCredential/ServerID")
-		if servers:
-			Config.servers = [f"DNS:{s}" for s in servers]
-			Config.servers_cn = servers[0]
-			Config.server_match = servers[0]
+		server_id_elems = provider.findall(".//ServerSideCredential/ServerID")
+		if server_id_elems:
+			Config.servers = [f"DNS:{s.text.strip()}" for s in server_id_elems if s.text and s.text.strip()]
+			if Config.servers:
+				first_server = server_id_elems[0].text.strip()
+				Config.servers_cn = first_server
+				Config.server_match = first_server
 
 		# CA Cert
 		ca = provider.findtext(".//ServerSideCredential/CA")
 		if ca:
+			ca = ca.strip()
 			if "-----BEGIN" not in ca:
 				ca = f"-----BEGIN CERTIFICATE-----\n{ca}\n-----END CERTIFICATE-----"
 			Config.CA = ca
@@ -863,13 +880,21 @@ class InstallerData:
 		support_url = provider.findtext(".//Helpdesk/WebAddress")
 		
 		if support_email:
-			Config.email = support_email
+			Config.email = support_email.strip()
 		if support_url:
-			Config.url = support_url
+			Config.url = support_url.strip()
 
 		# SSIDs
-		ssids = root.find(".//CredentialApplicability/IEEE80211/SSID")
-		Config.ssids = ssids if ssids else ['eduroam']
+		ssid_elems = root.findall(".//CredentialApplicability/IEEE80211/SSID")
+		if ssid_elems:
+			extracted_ssids = [s.text.strip() for s in ssid_elems if s.text and s.text.strip()]
+			if extracted_ssids:
+				Config.ssids = extracted_ssids
+			else:
+				Config.ssids = ['eduroam']
+		else:
+			Config.ssids = ['eduroam']
+		debug("Saving to SSIDs: {0}".format(Config.ssids))
 		
 		debug("Config object successfully updated from EAP-Config.")
 	
@@ -1402,23 +1427,41 @@ class IwdConfiguration:
 		self.config = ""
 
 	def write_config(self, ssid: str, force_system_path: bool = False) -> None:
-		if force_system_path:
-			file_path = f'/var/lib/iwd/{ssid}.8021x'
-		else:
-			file_path = f'{ssid}.8021x'
-			
-		try:
-			with open(file_path, 'w') as config_file:
-				debug("writing: "+file_path)
-				config_file.write(self.config)
-		except PermissionError:
-			try:
-				subprocess.run(['pkexec', 'tee', file_path], input=self.config, text=True, check=True, stdout=subprocess.DEVNULL)
-				subprocess.run(['pkexec', 'chmod', '600', file_path], check=True)
-			except Exception as e:
-				debug(f"Failed to write via pkexec tee: {e}")
+		"""Write a single IWD configuration."""
+		self.write_configs({ssid: self.config}, force_system_path)
 
-	def generate_iwd_config(self, ssid: str, user_data: Type[InstallerData], force_system_path: bool = False) -> None:
+	def write_configs(self, configs: dict, force_system_path: bool = False) -> None:
+		"""Write multiple IWD configurations, using a single elevation prompt if needed."""
+		if not configs:
+			return
+
+		# Try writing locally first if not forced to system path
+		if not force_system_path:
+			for ssid, content in configs.items():
+				try:
+					with open(f"{ssid}.8021x", 'w') as f:
+						f.write(content)
+				except Exception as e:
+					debug(f"Failed to write local IWD config for {ssid}: {e}")
+			return
+
+		# For system paths, collect all writes into a single elevated shell command
+		script_commands = []
+		for ssid, content in configs.items():
+			file_path = f'/var/lib/iwd/{ssid}.8021x'
+			quoted_path = shlex.quote(file_path)
+			# Use a unique marker for heredocs to safely pass the config content
+			marker = f"EOF_{uuid.uuid4().hex}"
+			cmd = f"tee {quoted_path} << '{marker}' > /dev/null\n{content}\n{marker}\nchmod 600 {quoted_path}"
+			script_commands.append(cmd)
+
+		full_command = "\n".join(script_commands)
+		try:
+			subprocess.run(['pkexec', 'sh', '-c', full_command], check=True)
+		except Exception as e:
+			debug(f"Failed to write system IWD configs via pkexec: {e}")
+
+	def generate_iwd_config(self, ssid: str, user_data: Type[InstallerData], force_system_path: bool = False, write: bool = True) -> None:
 		"""Generate an appropriate IWD 8021x config for a given EAP method"""
 		if Config.eap_outer == 'PWD':
 			self._create_eap_pwd_config(ssid, user_data)
@@ -1429,7 +1472,8 @@ class IwdConfiguration:
 		else:
 			msg = 'Invalid_connection_type'
 			raise ValueError(msg)
-		self.write_config(ssid, force_system_path=force_system_path)
+		if write:
+			self.write_config(ssid, force_system_path=force_system_path)
 
 	def _create_eap_pwd_config(self, ssid: str, user_data: Type[InstallerData]) -> None:
 		""" create EAP-PWD configuration """
@@ -1631,7 +1675,7 @@ class CatNMConfigTool:
 			match_key: match_value}
 		if Config.eap_outer in ('PEAP', 'TTLS'):
 			s_8021x_data['password'] = self.user_data.password
-			s_8021x_data['phase2-auth'] = Config.eap_inner.lower()
+			s_8021x_data['phase2-auth'] = Config.eap_inner.strip().lower()
 			s_8021x_data['anonymous-identity'] = outer_identity
 			s_8021x_data['password-flags'] = 1
 		elif Config.eap_outer == 'TLS':
@@ -1644,7 +1688,6 @@ class CatNMConfigTool:
 		s_con = dbus.Dictionary({
 			'type': '802-11-wireless',
 			'uuid': str(uuid.uuid4()),
-			'permissions': ['user:' + os.environ.get('USER')],
 			'id': ssid
 		})
 		s_wifi = dbus.Dictionary({
